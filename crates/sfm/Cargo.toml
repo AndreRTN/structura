@@ -1,0 +1,10 @@
+[package]
+name = "structura-sfm"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+structura-core = { path = "../core" }
+structura-vision = { path = "../vision" }
+anyhow.workspace = true
+factrs.workspace = true

@@ -1,0 +1,10 @@
+[package]
+name = "structura-calibration"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+structura-core = { path = "../core" }
+anyhow.workspace = true
+image.workspace = true
+opencv.workspace = true
