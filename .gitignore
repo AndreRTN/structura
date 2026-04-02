@@ -2,3 +2,4 @@
 /data
 Cargo.lock
 *.iml
+.codex

@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "crates/geometry",
     "crates/calibration",
     "crates/sfm",
     "crates/cli",
@@ -18,4 +19,5 @@ ndarray = "0.17.2"
 ort = { version = "=2.0.0-rc.11", default-features = false, features = ["load-dynamic"] }
 rayon = "1.11"
 kornia = "0.1.10-rc.3"
+kornia-apriltag = "0.1.10"
 chess-corners = "0.5.0"
