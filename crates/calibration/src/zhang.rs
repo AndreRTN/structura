@@ -125,7 +125,10 @@ pub fn estimate_radial_distortion(
         ));
     }
 
-    let num_equations = observations.iter().map(|view| view.len() * 2).sum::<usize>();
+    let num_equations = observations
+        .iter()
+        .map(|view| view.len() * 2)
+        .sum::<usize>();
     if num_equations < 5 {
         return Err(anyhow!(
             "at least three 2d/3d correspondences are required to estimate Brown-Conrady distortion"
@@ -344,17 +347,16 @@ fn radial_distance_squared(normalized: Point2<f64>) -> f64 {
     normalized.x * normalized.x + normalized.y * normalized.y
 }
 
-fn distort_normalized_point(
-    normalized: Point2<f64>,
-    distortion: ZhangDistortion,
-) -> Point2<f64> {
+fn distort_normalized_point(normalized: Point2<f64>, distortion: ZhangDistortion) -> Point2<f64> {
     let radial = radial_distance_squared(normalized);
     let radial_squared = radial * radial;
     let radial_cubed = radial_squared * radial;
     let x = normalized.x;
     let y = normalized.y;
-    let radial_factor =
-        1.0 + distortion.k1 * radial + distortion.k2 * radial_squared + distortion.k3 * radial_cubed;
+    let radial_factor = 1.0
+        + distortion.k1 * radial
+        + distortion.k2 * radial_squared
+        + distortion.k3 * radial_cubed;
 
     Point2::new(
         x * radial_factor + 2.0 * distortion.p1 * x * y + distortion.p2 * (radial + 2.0 * x * x),

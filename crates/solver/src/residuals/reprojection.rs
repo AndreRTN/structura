@@ -1,8 +1,8 @@
 use anyhow::{Result, anyhow};
 use factrs::{
     linalg::{Const, ForwardProp, Numeric, VectorX},
-    residuals::Residual3,
-    variables::{MatrixLieGroup, SE3, Variable, VectorVar2, VectorVar3, VectorVar5},
+    residuals::{Residual1, Residual2, Residual3},
+    variables::{MatrixLieGroup, SE3, SO3, Variable, VectorVar2, VectorVar3, VectorVar5},
 };
 use nalgebra::{Point2, Point3};
 use structura_geometry::camera::{CameraExtrinsics, CameraIntrinsics};
@@ -43,10 +43,88 @@ impl Residual3 for ReprojectionResidual {
         let observed: VectorVar2<T> = self.observed.cast();
         let projected = project_with_variable_model(&pose, &intrinsics, &distortion, &world);
 
-        VectorX::from_iterator(
-            2,
-            [projected[0] - observed[0], projected[1] - observed[1]],
-        )
+        VectorX::from_iterator(2, [projected[0] - observed[0], projected[1] - observed[1]])
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct BundleAdjustmentReprojectionResidual {
+    observed: VectorVar2,
+    intrinsics: VectorVar5,
+    distortion: VectorVar5,
+}
+
+impl BundleAdjustmentReprojectionResidual {
+    pub fn new(
+        observed: Point2<f64>,
+        intrinsics: &CameraIntrinsics,
+        distortion: &BrownConradyDistortion,
+    ) -> Self {
+        Self {
+            observed: VectorVar2::new(observed.x, observed.y),
+            intrinsics: intrinsics_to_variable(intrinsics),
+            distortion: distortion_to_variable(distortion),
+        }
+    }
+}
+
+#[factrs::mark]
+impl Residual2 for BundleAdjustmentReprojectionResidual {
+    type Differ = ForwardProp<Const<9>>;
+    type V1 = SE3;
+    type V2 = VectorVar3;
+    type DimIn = Const<9>;
+    type DimOut = Const<2>;
+
+    fn residual2<T: Numeric>(&self, pose: SE3<T>, world: VectorVar3<T>) -> VectorX<T> {
+        let observed: VectorVar2<T> = self.observed.cast();
+        let intrinsics: VectorVar5<T> = self.intrinsics.cast();
+        let distortion: VectorVar5<T> = self.distortion.cast();
+        let projected = project_with_variable_model(&pose, &intrinsics, &distortion, &world);
+
+        VectorX::from_iterator(2, [projected[0] - observed[0], projected[1] - observed[1]])
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct FixedCameraReprojectionResidual {
+    observed: VectorVar2,
+    pose: SE3,
+    intrinsics: VectorVar5,
+    distortion: VectorVar5,
+}
+
+impl FixedCameraReprojectionResidual {
+    pub fn new(
+        observed: Point2<f64>,
+        extrinsics: &CameraExtrinsics,
+        intrinsics: &CameraIntrinsics,
+        distortion: &BrownConradyDistortion,
+    ) -> Self {
+        Self {
+            observed: VectorVar2::new(observed.x, observed.y),
+            pose: extrinsics_to_se3(extrinsics),
+            intrinsics: intrinsics_to_variable(intrinsics),
+            distortion: distortion_to_variable(distortion),
+        }
+    }
+}
+
+#[factrs::mark]
+impl Residual1 for FixedCameraReprojectionResidual {
+    type Differ = ForwardProp<Const<3>>;
+    type V1 = VectorVar3;
+    type DimIn = Const<3>;
+    type DimOut = Const<2>;
+
+    fn residual1<T: Numeric>(&self, world: VectorVar3<T>) -> VectorX<T> {
+        let observed: VectorVar2<T> = self.observed.cast();
+        let pose: SE3<T> = self.pose.cast();
+        let intrinsics: VectorVar5<T> = self.intrinsics.cast();
+        let distortion: VectorVar5<T> = self.distortion.cast();
+        let projected = project_with_variable_model(&pose, &intrinsics, &distortion, &world);
+
+        VectorX::from_iterator(2, [projected[0] - observed[0], projected[1] - observed[1]])
     }
 }
 
@@ -69,6 +147,26 @@ pub fn project_world_to_pixel(
     ))
 }
 
+pub(crate) fn intrinsics_to_variable(intrinsics: &CameraIntrinsics) -> VectorVar5 {
+    VectorVar5::new(
+        intrinsics.alpha,
+        intrinsics.beta,
+        intrinsics.gamma,
+        intrinsics.u0,
+        intrinsics.v0,
+    )
+}
+
+pub(crate) fn distortion_to_variable(distortion: &BrownConradyDistortion) -> VectorVar5 {
+    VectorVar5::new(
+        distortion.k1,
+        distortion.k2,
+        distortion.k3,
+        distortion.p1,
+        distortion.p2,
+    )
+}
+
 pub(crate) fn project_point_from_normalized(
     intrinsics: &CameraIntrinsics,
     distortion: &BrownConradyDistortion,
@@ -83,7 +181,7 @@ pub(crate) fn project_point_from_normalized(
     )
 }
 
-fn project_with_variable_model<T: Numeric>(
+pub(crate) fn project_with_variable_model<T: Numeric>(
     pose: &SE3<T>,
     intrinsics: &VectorVar5<T>,
     distortion: &VectorVar5<T>,
@@ -97,6 +195,13 @@ fn project_with_variable_model<T: Numeric>(
     VectorVar2::new(
         intrinsics[0] * x_distorted + intrinsics[2] * y_distorted + intrinsics[3],
         intrinsics[1] * y_distorted + intrinsics[4],
+    )
+}
+
+fn extrinsics_to_se3(extrinsics: &CameraExtrinsics) -> SE3 {
+    SE3::from_rot_trans(
+        SO3::from_matrix(extrinsics.rotation.as_view()),
+        extrinsics.translation,
     )
 }
 
@@ -145,7 +250,10 @@ mod tests {
     use nalgebra::Vector3 as NaVector3;
 
     fn make_pose(translation: NaVector3<f64>) -> SE3 {
-        SE3::from_rot_trans(SO3::identity(), Vector3::new(translation.x, translation.y, translation.z))
+        SE3::from_rot_trans(
+            SO3::identity(),
+            Vector3::new(translation.x, translation.y, translation.z),
+        )
     }
 
     fn make_extrinsics(translation: NaVector3<f64>) -> CameraExtrinsics {
@@ -156,7 +264,7 @@ mod tests {
     }
 
     #[test]
-    fn residual_is_zero_for_perfect_projection() {
+    fn calibration_residual_is_zero_for_perfect_projection() {
         let intrinsics = VectorVar5::new(800.0, 790.0, 2.0, 320.0, 240.0);
         let distortion = VectorVar5::new(-0.04, 0.01, 0.002, 0.001, -0.0005);
         let world = Point3::new(0.1, -0.05, 0.0);
@@ -175,7 +283,70 @@ mod tests {
     }
 
     #[test]
-    fn residual_matches_pixel_offset() {
+    fn bundle_adjustment_residual_is_zero_for_perfect_projection() {
+        let intrinsics = CameraIntrinsics {
+            alpha: 800.0,
+            beta: 790.0,
+            gamma: 2.0,
+            u0: 320.0,
+            v0: 240.0,
+        };
+        let distortion = BrownConradyDistortion {
+            k1: -0.04,
+            k2: 0.01,
+            k3: 0.002,
+            p1: 0.001,
+            p2: -0.0005,
+        };
+        let world = VectorVar3::new(0.1, -0.05, 0.0);
+        let pose = make_pose(NaVector3::new(0.0, 0.0, 1.2));
+        let observed = project_with_variable_model(
+            &pose,
+            &intrinsics_to_variable(&intrinsics),
+            &distortion_to_variable(&distortion),
+            &world,
+        );
+        let residual = BundleAdjustmentReprojectionResidual::new(
+            Point2::new(observed[0], observed[1]),
+            &intrinsics,
+            &distortion,
+        );
+        let values = residual.residual2(pose, world);
+
+        assert_relative_eq!(values[0], 0.0, epsilon = 1e-12);
+        assert_relative_eq!(values[1], 0.0, epsilon = 1e-12);
+    }
+
+    #[test]
+    fn fixed_camera_residual_is_zero_for_perfect_projection() {
+        let intrinsics = CameraIntrinsics {
+            alpha: 800.0,
+            beta: 790.0,
+            gamma: 2.0,
+            u0: 320.0,
+            v0: 240.0,
+        };
+        let distortion = BrownConradyDistortion {
+            k1: -0.04,
+            k2: 0.01,
+            k3: 0.002,
+            p1: 0.001,
+            p2: -0.0005,
+        };
+        let extrinsics = make_extrinsics(NaVector3::new(0.0, 0.0, 1.2));
+        let world = Point3::new(0.1, -0.05, 0.0);
+        let observed =
+            project_world_to_pixel(&intrinsics, &distortion, &extrinsics, world).unwrap();
+        let residual =
+            FixedCameraReprojectionResidual::new(observed, &extrinsics, &intrinsics, &distortion);
+        let values = residual.residual1(VectorVar3::new(world.x, world.y, world.z));
+
+        assert_relative_eq!(values[0], 0.0, epsilon = 1e-12);
+        assert_relative_eq!(values[1], 0.0, epsilon = 1e-12);
+    }
+
+    #[test]
+    fn calibration_residual_matches_pixel_offset() {
         let pose = make_pose(NaVector3::new(0.0, 0.0, 1.0));
         let intrinsics = VectorVar5::new(800.0, 800.0, 0.0, 320.0, 240.0);
         let distortion = VectorVar5::new(0.0, 0.0, 0.0, 0.0, 0.0);
@@ -242,25 +413,14 @@ mod tests {
         };
         let extrinsics = make_extrinsics(NaVector3::new(0.02, -0.03, 1.3));
         let world = Point3::new(0.15, -0.04, 0.0);
-        let projected = project_world_to_pixel(&intrinsics, &distortion, &extrinsics, world).unwrap();
+        let projected =
+            project_world_to_pixel(&intrinsics, &distortion, &extrinsics, world).unwrap();
 
         let pose = make_pose(extrinsics.translation);
         let projected_var = project_with_variable_model(
             &pose,
-            &VectorVar5::new(
-                intrinsics.alpha,
-                intrinsics.beta,
-                intrinsics.gamma,
-                intrinsics.u0,
-                intrinsics.v0,
-            ),
-            &VectorVar5::new(
-                distortion.k1,
-                distortion.k2,
-                distortion.k3,
-                distortion.p1,
-                distortion.p2,
-            ),
+            &intrinsics_to_variable(&intrinsics),
+            &distortion_to_variable(&distortion),
             &VectorVar3::new(world.x, world.y, world.z),
         );
 

@@ -9,7 +9,10 @@ use ort::{
 };
 use structura_geometry::point::ImagePoint;
 
-use crate::matching::{LoweRatioConfig, PointMatch, lowe_ratio_match_by};
+pub use crate::descriptor::{
+    DescriptorFeature as XfeatFeature, DescriptorFeatureSet as XfeatFeatureSet,
+    lowe_ratio_match_descriptor_features as lowe_ratio_match_features,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct XfeatConfig {
@@ -23,32 +26,6 @@ impl Default for XfeatConfig {
             detection_threshold: 0.05,
             top_k: 4096,
         }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct XfeatFeature {
-    pub point: ImagePoint,
-    pub score: f32,
-    pub descriptor: Vec<f32>,
-}
-
-#[derive(Debug, Clone, PartialEq, Default)]
-pub struct XfeatFeatureSet {
-    pub features: Vec<XfeatFeature>,
-}
-
-impl XfeatFeatureSet {
-    pub fn len(&self) -> usize {
-        self.features.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.features.is_empty()
-    }
-
-    pub fn keypoints(&self) -> Vec<ImagePoint> {
-        self.features.iter().map(|feature| feature.point).collect()
     }
 }
 
@@ -93,29 +70,6 @@ impl XfeatExtractor {
     }
 }
 
-pub fn lowe_ratio_match_features(
-    source: &XfeatFeatureSet,
-    target: &XfeatFeatureSet,
-    config: LoweRatioConfig,
-) -> Result<Vec<PointMatch>> {
-    lowe_ratio_match_by(&source.features, &target.features, config, |lhs, rhs| {
-        descriptor_distance(&lhs.descriptor, &rhs.descriptor)
-    })
-    .map(|matches| {
-        matches
-            .into_iter()
-            .map(|matched| PointMatch {
-                source_index: matched.source_index,
-                target_index: matched.target_index,
-                source_point: source.features[matched.source_index].point,
-                target_point: target.features[matched.target_index].point,
-                distance: matched.distance,
-                ratio: matched.ratio,
-            })
-            .collect()
-    })
-}
-
 #[derive(Debug, Clone)]
 struct PreparedImage {
     tensor: Array4<f32>,
@@ -142,7 +96,10 @@ fn prepare_xfeat_input(image: &RgbImage) -> Result<PreparedImage> {
     let src_height = image.height() as usize;
     let width = (src_width / 32) * 32;
     let height = (src_height / 32) * 32;
-    anyhow::ensure!(width > 0 && height > 0, "image is too small after 32-pixel alignment");
+    anyhow::ensure!(
+        width > 0 && height > 0,
+        "image is too small after 32-pixel alignment"
+    );
 
     let resized = if width == src_width && height == src_height {
         image.clone()
@@ -257,7 +214,10 @@ fn keypoint_logits_to_heatmap(keypoint_logits: &Array4<f32>) -> Result<Array4<f3
         .shape()
         .try_into()
         .map_err(|_| anyhow!("keypoint_logits must have rank 4"))?;
-    anyhow::ensure!(channels >= 64, "keypoint_logits must expose at least 64 channels");
+    anyhow::ensure!(
+        channels >= 64,
+        "keypoint_logits must expose at least 64 channels"
+    );
 
     let mut out = Array4::<f32>::zeros((batch, 1, h8 * 8, w8 * 8));
     (0..batch).for_each(|b| {
@@ -361,20 +321,14 @@ fn bilinear_sample_descriptor(map: &ArrayView3<'_, f32>, x: f32, y: f32) -> Arra
             bilinear_sample_scalar(&map.index_axis(Axis(0), channel), x / 8.0, y / 8.0);
     });
 
-    let norm = descriptor.iter().map(|value| value * value).sum::<f32>().sqrt().max(1e-12);
-    descriptor.mapv_inplace(|value| value / norm);
-    descriptor
-}
-
-fn descriptor_distance(lhs: &[f32], rhs: &[f32]) -> f32 {
-    lhs.iter()
-        .zip(rhs.iter())
-        .map(|(left, right)| {
-            let delta = left - right;
-            delta * delta
-        })
+    let norm = descriptor
+        .iter()
+        .map(|value| value * value)
         .sum::<f32>()
         .sqrt()
+        .max(1e-12);
+    descriptor.mapv_inplace(|value| value / norm);
+    descriptor
 }
 
 #[cfg(test)]
@@ -382,6 +336,8 @@ mod tests {
     use super::*;
     use image::{Rgb, RgbImage};
     use std::path::PathBuf;
+
+    use crate::matching::LoweRatioConfig;
 
     #[test]
     fn decodes_sparse_features_from_synthetic_logits() {
@@ -453,12 +409,15 @@ mod tests {
 
     #[test]
     fn extracts_and_matches_translated_checkerboard_with_onnx_backbone() {
-        let model_path = workspace_root()
-            .join("models")
-            .join("xfeat_backbone.onnx");
-        let mut extractor =
-            XfeatExtractor::with_config(&model_path, XfeatConfig { detection_threshold: 0.03, top_k: 1024 })
-                .unwrap();
+        let model_path = workspace_root().join("models").join("xfeat_backbone.onnx");
+        let mut extractor = XfeatExtractor::with_config(
+            &model_path,
+            XfeatConfig {
+                detection_threshold: 0.03,
+                top_k: 1024,
+            },
+        )
+        .unwrap();
         let image0 = synthetic_checkerboard_image(256, 256, 32, (0, 0));
         let image1 = synthetic_checkerboard_image(256, 256, 32, (8, 6));
 
@@ -467,9 +426,21 @@ mod tests {
         let matches =
             lowe_ratio_match_features(&features0, &features1, LoweRatioConfig::new(0.9)).unwrap();
 
-        assert!(features0.len() >= 32, "expected rich features in image0, got {}", features0.len());
-        assert!(features1.len() >= 32, "expected rich features in image1, got {}", features1.len());
-        assert!(matches.len() >= 12, "expected enough matches, got {}", matches.len());
+        assert!(
+            features0.len() >= 32,
+            "expected rich features in image0, got {}",
+            features0.len()
+        );
+        assert!(
+            features1.len() >= 32,
+            "expected rich features in image1, got {}",
+            features1.len()
+        );
+        assert!(
+            matches.len() >= 12,
+            "expected enough matches, got {}",
+            matches.len()
+        );
 
         let consistent_translations = matches
             .iter()

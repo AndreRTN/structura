@@ -1,4 +1,7 @@
-use std::{fs, path::{Path, PathBuf}};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
 
 use anyhow::{Context, Result, anyhow};
 use approx::assert_relative_eq;
@@ -8,9 +11,7 @@ use nalgebra::{Point2, Point3, Rotation3, Vector3};
 use structura_calibration::{
     chessboard::{ChessCornersDetector, detect_chessboard_corners},
     detector::GrayImage,
-    zhang::{
-        ZhangDistortion, calibrate_from_homographies_with_radial_distortion, distort_point,
-    },
+    zhang::{ZhangDistortion, calibrate_from_homographies_with_radial_distortion, distort_point},
 };
 use structura_geometry::{
     camera::{CameraExtrinsics, CameraIntrinsics},
@@ -61,7 +62,10 @@ fn calibrates_chessboard_dataset_close_to_ground_truth() -> Result<()> {
         refined.reprojection_error,
     );
 
-    assert!(zhang_error < 3.5, "zhang reprojection error too high: {zhang_error}");
+    assert!(
+        zhang_error < 3.5,
+        "zhang reprojection error too high: {zhang_error}"
+    );
     assert!(
         refined.reprojection_error < zhang_error,
         "solver refinement should reduce reprojection error: zhang={zhang_error}, refined={}",
@@ -117,9 +121,7 @@ impl ChessboardDataset {
             .filter(|path| {
                 path.file_name()
                     .and_then(|name| name.to_str())
-                    .is_some_and(|name| {
-                        name.starts_with("left") && name.ends_with(".jpg")
-                    })
+                    .is_some_and(|name| name.starts_with("left") && name.ends_with(".jpg"))
             })
             .collect::<Vec<_>>();
         image_paths.sort();
@@ -164,7 +166,9 @@ impl ChessboardDataset {
             .collect::<Result<Vec<_>>>()?;
 
         assert!(
-            selected.iter().all(|view| view.matches.len() == BOARD_POINT_COUNT),
+            selected
+                .iter()
+                .all(|view| view.matches.len() == BOARD_POINT_COUNT),
             "all selected views must contain the full board"
         );
 
@@ -253,8 +257,13 @@ fn match_corners_to_world(
 }
 
 fn build_homography(matches: &[PointCorrespondence2D3D]) -> Result<HomographyMatrix> {
-    let corners = [0, BOARD_WIDTH - 1, BOARD_POINT_COUNT - BOARD_WIDTH, BOARD_POINT_COUNT - 1]
-        .map(|index| &matches[index]);
+    let corners = [
+        0,
+        BOARD_WIDTH - 1,
+        BOARD_POINT_COUNT - BOARD_WIDTH,
+        BOARD_POINT_COUNT - 1,
+    ]
+    .map(|index| &matches[index]);
     let source = corners.map(|entry| ImagePoint::new(entry.world.x as f32, entry.world.y as f32));
     let target = corners.map(|entry| ImagePoint::new(entry.image.x as f32, entry.image.y as f32));
 
@@ -283,7 +292,9 @@ fn project_world_to_pixel(
     }
 
     let ideal = Point2::new(
-        intrinsics.alpha * (camera.x / camera.z) + intrinsics.gamma * (camera.y / camera.z) + intrinsics.u0,
+        intrinsics.alpha * (camera.x / camera.z)
+            + intrinsics.gamma * (camera.y / camera.z)
+            + intrinsics.u0,
         intrinsics.beta * (camera.y / camera.z) + intrinsics.v0,
     );
 
@@ -303,9 +314,21 @@ fn log_estimated_vs_ground_truth(
     refined_error: f64,
 ) {
     let rows = [
-        ("fx", estimated_intrinsics.alpha, ground_truth_intrinsics.alpha),
-        ("fy", estimated_intrinsics.beta, ground_truth_intrinsics.beta),
-        ("skew", estimated_intrinsics.gamma, ground_truth_intrinsics.gamma),
+        (
+            "fx",
+            estimated_intrinsics.alpha,
+            ground_truth_intrinsics.alpha,
+        ),
+        (
+            "fy",
+            estimated_intrinsics.beta,
+            ground_truth_intrinsics.beta,
+        ),
+        (
+            "skew",
+            estimated_intrinsics.gamma,
+            ground_truth_intrinsics.gamma,
+        ),
         ("cx", estimated_intrinsics.u0, ground_truth_intrinsics.u0),
         ("cy", estimated_intrinsics.v0, ground_truth_intrinsics.v0),
         ("k1", estimated_distortion.k1, ground_truth_distortion.k1),
@@ -350,7 +373,10 @@ fn assert_intrinsics_close(estimated: &CameraIntrinsics, ground_truth: &CameraIn
     assert_relative_eq!(estimated.v0, ground_truth.v0, epsilon = 20.0);
 }
 
-fn assert_distortion_close(estimated: &structura_solver::BrownConradyDistortion, ground_truth: &ZhangDistortion) {
+fn assert_distortion_close(
+    estimated: &structura_solver::BrownConradyDistortion,
+    ground_truth: &ZhangDistortion,
+) {
     assert_relative_eq!(estimated.k1, ground_truth.k1, epsilon = 0.15);
     assert_relative_eq!(estimated.k2, ground_truth.k2, epsilon = 0.15);
     assert_relative_eq!(estimated.k3, ground_truth.k3, epsilon = 0.35);
@@ -412,8 +438,15 @@ fn parse_matrix_data(yaml: &str, key: &str) -> Result<Vec<f64>> {
             lines
                 .iter()
                 .find_map(|line| {
-                    line.split_once("data:")
-                        .map(|(_, rest)| collect_bracketed_values(rest, lines.iter().skip_while(|candidate| *candidate != line).skip(1)))
+                    line.split_once("data:").map(|(_, rest)| {
+                        collect_bracketed_values(
+                            rest,
+                            lines
+                                .iter()
+                                .skip_while(|candidate| *candidate != line)
+                                .skip(1),
+                        )
+                    })
                 })
                 .ok_or_else(|| anyhow!("missing data array for yaml key {key}"))?
         })
@@ -454,7 +487,12 @@ where
 
 fn parse_scalar(yaml: &str, key: &str) -> Result<f64> {
     yaml.lines()
-        .find_map(|line| line.trim_start().split_once(':').filter(|(name, _)| *name == key).map(|(_, value)| value.trim()))
+        .find_map(|line| {
+            line.trim_start()
+                .split_once(':')
+                .filter(|(name, _)| *name == key)
+                .map(|(_, value)| value.trim())
+        })
         .ok_or_else(|| anyhow!("missing scalar key {key}"))?
         .parse::<f64>()
         .map_err(|error| anyhow!("failed to parse scalar key {key}: {error}"))

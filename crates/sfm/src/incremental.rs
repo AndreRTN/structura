@@ -1,76 +1,25 @@
 use anyhow::{Result, anyhow, ensure};
 use nalgebra::{Matrix3, Vector3};
+use std::collections::HashMap;
 use structura_feature::{
-    matching::{LoweRatioConfig, PointMatch},
-    xfeat::{XfeatFeatureSet, lowe_ratio_match_features},
+    descriptor::{DescriptorFeatureSet, lowe_ratio_match_descriptor_features},
+    matching::PointMatch,
 };
 use structura_geometry::{
     camera::{CameraExtrinsics, CameraIntrinsics},
     epnp::EpnpSolver,
     point::{ImagePoint64, PointCorrespondence2D3D, WorldPoint},
-    triangulation::{TriangulationObservation, has_positive_depth, triangulate_observations},
+    triangulation::{
+        TriangulationObservation, has_positive_depth, triangulate_observations,
+        triangulate_observations_with_stats,
+    },
 };
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct InitialPairSelectionConfig {
-    pub lowe_ratio: LoweRatioConfig,
-    pub min_matches: usize,
-}
-
-impl Default for InitialPairSelectionConfig {
-    fn default() -> Self {
-        Self {
-            lowe_ratio: LoweRatioConfig::default(),
-            min_matches: 64,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct InitialPairScore {
-    pub overlap_score: f64,
-    pub baseline_score: f64,
-    pub total_score: f64,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct InitialPairCandidate {
-    pub source_view_index: usize,
-    pub target_view_index: usize,
-    pub matches: Vec<PointMatch>,
-    pub score: InitialPairScore,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct LandmarkObservation {
-    pub view_index: usize,
-    pub feature_index: usize,
-    pub image_point: ImagePoint64,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct LandmarkTrack {
-    pub position: WorldPoint,
-    pub observations: Vec<LandmarkObservation>,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct RegisteredView {
-    pub view_index: usize,
-    pub extrinsics: CameraExtrinsics,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct InitialReconstruction {
-    pub views: [RegisteredView; 2],
-    pub landmarks: Vec<LandmarkTrack>,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct NextViewRegistration {
-    pub view: RegisteredView,
-    pub used_correspondence_count: usize,
-}
+use crate::types::{
+    FeatureTrack, InitialPairCandidate, InitialPairScore, InitialPairSelectionConfig,
+    InitialReconstruction, LandmarkObservation, LandmarkTrack, NextViewRegistration,
+    RegisteredView, TrackTriangulationConfig,
+};
 
 pub trait PnpSolver {
     fn solve_pose(
@@ -81,7 +30,7 @@ pub trait PnpSolver {
 }
 
 pub fn select_initial_pair(
-    feature_sets: &[XfeatFeatureSet],
+    feature_sets: &[DescriptorFeatureSet],
     config: InitialPairSelectionConfig,
 ) -> Result<InitialPairCandidate> {
     ensure!(
@@ -93,7 +42,7 @@ pub fn select_initial_pair(
 
     for source_view_index in 0..feature_sets.len() - 1 {
         for target_view_index in source_view_index + 1..feature_sets.len() {
-            let matches = lowe_ratio_match_features(
+            let matches = lowe_ratio_match_descriptor_features(
                 &feature_sets[source_view_index],
                 &feature_sets[target_view_index],
                 config.lowe_ratio,
@@ -147,13 +96,46 @@ pub fn reconstruct_initial_pair(
     };
     let second_pose = recover_relative_pose(intrinsics, essential_matrix, &initial_pair.matches)?;
 
-    let landmarks = triangulate_landmarks(
+    let views = [
+        RegisteredView {
+            view_index: initial_pair.source_view_index,
+            extrinsics: first_pose,
+        },
+        RegisteredView {
+            view_index: initial_pair.target_view_index,
+            extrinsics: second_pose,
+        },
+    ];
+    let tracks = initial_pair
+        .matches
+        .iter()
+        .map(|matched| FeatureTrack {
+            observations: vec![
+                LandmarkObservation {
+                    view_index: initial_pair.source_view_index,
+                    feature_index: matched.source_index,
+                    image_point: ImagePoint64::new(
+                        matched.source_point.x as f64,
+                        matched.source_point.y as f64,
+                    ),
+                },
+                LandmarkObservation {
+                    view_index: initial_pair.target_view_index,
+                    feature_index: matched.target_index,
+                    image_point: ImagePoint64::new(
+                        matched.target_point.x as f64,
+                        matched.target_point.y as f64,
+                    ),
+                },
+            ],
+        })
+        .collect::<Vec<_>>();
+
+    let landmarks = triangulate_feature_tracks(
         intrinsics,
-        &first_pose,
-        &second_pose,
-        initial_pair.source_view_index,
-        initial_pair.target_view_index,
-        &initial_pair.matches,
+        &views,
+        &tracks,
+        TrackTriangulationConfig::default(),
     )?;
 
     ensure!(
@@ -161,19 +143,7 @@ pub fn reconstruct_initial_pair(
         "essential matrix decomposition did not yield any front-facing triangulated landmarks"
     );
 
-    Ok(InitialReconstruction {
-        views: [
-            RegisteredView {
-                view_index: initial_pair.source_view_index,
-                extrinsics: first_pose,
-            },
-            RegisteredView {
-                view_index: initial_pair.target_view_index,
-                extrinsics: second_pose,
-            },
-        ],
-        landmarks,
-    })
+    Ok(InitialReconstruction { views, landmarks })
 }
 
 pub fn register_next_view(
@@ -211,6 +181,69 @@ pub fn register_next_view_with_solver(
     })
 }
 
+pub fn triangulate_feature_tracks(
+    intrinsics: &CameraIntrinsics,
+    views: &[RegisteredView],
+    tracks: &[FeatureTrack],
+    config: TrackTriangulationConfig,
+) -> Result<Vec<LandmarkTrack>> {
+    let views_by_index = views
+        .iter()
+        .map(|view| (view.view_index, &view.extrinsics))
+        .collect::<HashMap<_, _>>();
+
+    tracks
+        .iter()
+        .filter(|track| track.observations.len() >= config.min_observations)
+        .map(|track| {
+            let observations = track
+                .observations
+                .iter()
+                .map(|observation| {
+                    let extrinsics =
+                        views_by_index.get(&observation.view_index).ok_or_else(|| {
+                            anyhow!(
+                                "missing camera pose for view {} while triangulating track",
+                                observation.view_index
+                            )
+                        })?;
+                    Ok(TriangulationObservation::new(
+                        observation.image_point,
+                        (*extrinsics).clone(),
+                    ))
+                })
+                .collect::<Result<Vec<_>>>()?;
+            let triangulated = triangulate_observations_with_stats(intrinsics, &observations)?;
+
+            ensure!(
+                triangulated.mean_reprojection_error <= config.max_mean_reprojection_error,
+                "track reprojection error {:.3} exceeds limit {:.3}",
+                triangulated.mean_reprojection_error,
+                config.max_mean_reprojection_error
+            );
+
+            if config.require_positive_depth {
+                ensure!(
+                    observations.iter().all(|observation| has_positive_depth(
+                        &observation.extrinsics,
+                        &triangulated.position
+                    )),
+                    "triangulated track lies behind at least one camera"
+                );
+            }
+
+            Ok(LandmarkTrack {
+                position: triangulated.position,
+                observations: track.observations.clone(),
+            })
+        })
+        .filter_map(|result| match result {
+            Ok(track) => Some(Ok(track)),
+            Err(_) => None,
+        })
+        .collect()
+}
+
 impl PnpSolver for EpnpSolver {
     fn solve_pose(
         &self,
@@ -222,8 +255,8 @@ impl PnpSolver for EpnpSolver {
 }
 
 fn score_initial_pair(
-    source: &XfeatFeatureSet,
-    target: &XfeatFeatureSet,
+    source: &DescriptorFeatureSet,
+    target: &DescriptorFeatureSet,
     matches: &[PointMatch],
 ) -> InitialPairScore {
     let source_count = source.len().max(1) as f64;
@@ -340,47 +373,6 @@ fn cheirality_score(
         .count())
 }
 
-fn triangulate_landmarks(
-    intrinsics: &CameraIntrinsics,
-    first_pose: &CameraExtrinsics,
-    second_pose: &CameraExtrinsics,
-    first_view_index: usize,
-    second_view_index: usize,
-    matches: &[PointMatch],
-) -> Result<Vec<LandmarkTrack>> {
-    Ok(matches
-        .iter()
-        .filter_map(|matched| {
-            triangulate_match(intrinsics, first_pose, second_pose, matched)
-                .ok()
-                .filter(|world| {
-                    has_positive_depth(first_pose, world) && has_positive_depth(second_pose, world)
-                })
-                .map(|world| LandmarkTrack {
-                    position: world,
-                    observations: vec![
-                        LandmarkObservation {
-                            view_index: first_view_index,
-                            feature_index: matched.source_index,
-                            image_point: ImagePoint64::new(
-                                matched.source_point.x as f64,
-                                matched.source_point.y as f64,
-                            ),
-                        },
-                        LandmarkObservation {
-                            view_index: second_view_index,
-                            feature_index: matched.target_index,
-                            image_point: ImagePoint64::new(
-                                matched.target_point.x as f64,
-                                matched.target_point.y as f64,
-                            ),
-                        },
-                    ],
-                })
-        })
-        .collect())
-}
-
 fn triangulate_match(
     intrinsics: &CameraIntrinsics,
     first_pose: &CameraExtrinsics,
@@ -406,7 +398,8 @@ fn triangulate_match(
 mod tests {
     use super::*;
     use nalgebra::{Point2, Rotation3, Vector2};
-    use structura_feature::xfeat::XfeatFeature;
+    use structura_feature::descriptor::DescriptorFeature;
+    use structura_geometry::point::ImagePoint;
 
     struct StubPnpSolver {
         expected: CameraExtrinsics,
@@ -564,12 +557,66 @@ mod tests {
         assert!(rotation_delta.angle() < 1e-3);
     }
 
-    fn feature_set(points: &[(f32, f32)]) -> XfeatFeatureSet {
-        XfeatFeatureSet {
+    #[test]
+    fn triangulates_sparse_tracks_from_registered_views() {
+        let intrinsics = sample_intrinsics();
+        let first = RegisteredView {
+            view_index: 0,
+            extrinsics: CameraExtrinsics {
+                rotation: Matrix3::identity(),
+                translation: Vector3::zeros(),
+            },
+        };
+        let second = RegisteredView {
+            view_index: 1,
+            extrinsics: CameraExtrinsics {
+                rotation: Rotation3::from_euler_angles(0.02, -0.03, 0.05).into_inner(),
+                translation: Vector3::new(0.4, 0.02, 0.03),
+            },
+        };
+        let world_points = sample_world_points();
+        let tracks = world_points
+            .iter()
+            .enumerate()
+            .map(|(index, world)| FeatureTrack {
+                observations: vec![
+                    LandmarkObservation {
+                        view_index: 0,
+                        feature_index: index,
+                        image_point: project64(&intrinsics, &first.extrinsics, *world),
+                    },
+                    LandmarkObservation {
+                        view_index: 1,
+                        feature_index: index,
+                        image_point: project64(&intrinsics, &second.extrinsics, *world),
+                    },
+                ],
+            })
+            .collect::<Vec<_>>();
+
+        let landmarks = triangulate_feature_tracks(
+            &intrinsics,
+            &[first, second],
+            &tracks,
+            TrackTriangulationConfig::default(),
+        )
+        .unwrap();
+
+        assert_eq!(landmarks.len(), world_points.len());
+        assert!(
+            landmarks
+                .iter()
+                .zip(world_points.iter())
+                .all(|(landmark, world)| (landmark.position - *world).norm() < 1e-3)
+        );
+    }
+
+    fn feature_set(points: &[(f32, f32)]) -> DescriptorFeatureSet {
+        DescriptorFeatureSet {
             features: points
                 .iter()
-                .map(|&(x, y)| XfeatFeature {
-                    point: nalgebra::Point2::new(x, y),
+                .map(|&(x, y)| DescriptorFeature {
+                    point: ImagePoint::new(x, y),
                     score: 1.0,
                     descriptor: vec![x, y, x + y],
                 })

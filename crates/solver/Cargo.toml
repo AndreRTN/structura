@@ -14,3 +14,5 @@ structura-geometry = { path = "../geometry" }
 approx = "0.5"
 image.workspace = true
 kornia.workspace = true
+serde_json = "1"
+structura-feature = { path = "../feature" }

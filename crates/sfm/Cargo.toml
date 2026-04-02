@@ -9,3 +9,7 @@ factrs.workspace = true
 nalgebra.workspace = true
 structura-feature = { path = "../feature" }
 structura-geometry = { path = "../geometry" }
+structura-solver = { path = "../solver" }
+
+[dev-dependencies]
+serde_json = "1"

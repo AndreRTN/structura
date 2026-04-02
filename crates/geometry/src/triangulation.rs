@@ -6,6 +6,13 @@ use crate::{
     point::{ImagePoint64, WorldPoint},
 };
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TriangulatedPoint {
+    pub position: WorldPoint,
+    pub mean_reprojection_error: f64,
+    pub max_reprojection_error: f64,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct TriangulationObservation {
     pub image: ImagePoint64,
@@ -38,6 +45,13 @@ pub fn triangulate_observations(
     intrinsics: &CameraIntrinsics,
     observations: &[TriangulationObservation],
 ) -> Result<WorldPoint> {
+    Ok(triangulate_observations_with_stats(intrinsics, observations)?.position)
+}
+
+pub fn triangulate_observations_with_stats(
+    intrinsics: &CameraIntrinsics,
+    observations: &[TriangulationObservation],
+) -> Result<TriangulatedPoint> {
     ensure!(
         observations.len() >= 2,
         "triangulation requires at least two observations"
@@ -61,7 +75,26 @@ pub fn triangulate_observations(
         .solve(&rhs)
         .ok_or_else(|| anyhow!("triangulation failed because the viewing rays are degenerate"))?;
 
-    Ok(WorldPoint::from(point))
+    let position = WorldPoint::from(point);
+    let errors = observations
+        .iter()
+        .map(|observation| {
+            reprojection_error(
+                intrinsics,
+                &observation.extrinsics,
+                &position,
+                observation.image,
+            )
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let mean_reprojection_error = errors.iter().sum::<f64>() / errors.len().max(1) as f64;
+    let max_reprojection_error = errors.into_iter().fold(0.0_f64, f64::max);
+
+    Ok(TriangulatedPoint {
+        position,
+        mean_reprojection_error,
+        max_reprojection_error,
+    })
 }
 
 pub fn normalized_image_point(
@@ -86,6 +119,34 @@ pub fn point_depth(extrinsics: &CameraExtrinsics, world: &WorldPoint) -> f64 {
 
 pub fn has_positive_depth(extrinsics: &CameraExtrinsics, world: &WorldPoint) -> bool {
     point_depth(extrinsics, world) > 0.0
+}
+
+pub fn project_world_to_image(
+    intrinsics: &CameraIntrinsics,
+    extrinsics: &CameraExtrinsics,
+    world: &WorldPoint,
+) -> Result<ImagePoint64> {
+    let camera = extrinsics.rotation * world.coords + extrinsics.translation;
+    ensure!(camera.z > 1e-12, "point projects behind the camera");
+
+    Ok(ImagePoint64::new(
+        intrinsics.alpha * (camera.x / camera.z)
+            + intrinsics.gamma * (camera.y / camera.z)
+            + intrinsics.u0,
+        intrinsics.beta * (camera.y / camera.z) + intrinsics.v0,
+    ))
+}
+
+pub fn reprojection_error(
+    intrinsics: &CameraIntrinsics,
+    extrinsics: &CameraExtrinsics,
+    world: &WorldPoint,
+    observed: ImagePoint64,
+) -> Result<f64> {
+    let projected = project_world_to_image(intrinsics, extrinsics, world)?;
+    let dx = projected.x - observed.x;
+    let dy = projected.y - observed.y;
+    Ok((dx * dx + dy * dy).sqrt())
 }
 
 fn viewing_ray_direction(
@@ -173,6 +234,35 @@ mod tests {
     }
 
     #[test]
+    fn reports_reprojection_statistics() {
+        let intrinsics = sample_intrinsics();
+        let first = CameraExtrinsics {
+            rotation: Matrix3::identity(),
+            translation: Vector3::zeros(),
+        };
+        let second = CameraExtrinsics {
+            rotation: Rotation3::from_euler_angles(0.01, -0.03, 0.02).into_inner(),
+            translation: Vector3::new(0.4, 0.02, 0.01),
+        };
+        let world = WorldPoint::new(0.2, -0.1, 4.5);
+        let observations = vec![
+            TriangulationObservation::new(project(&intrinsics, &first, world), first),
+            TriangulationObservation::new(
+                Point2::new(
+                    project(&intrinsics, &second, world).x + 0.2,
+                    project(&intrinsics, &second, world).y - 0.1,
+                ),
+                second,
+            ),
+        ];
+
+        let triangulated = triangulate_observations_with_stats(&intrinsics, &observations).unwrap();
+
+        assert!(triangulated.mean_reprojection_error > 0.0);
+        assert!(triangulated.max_reprojection_error >= triangulated.mean_reprojection_error);
+    }
+
+    #[test]
     fn rejects_single_observation() {
         let intrinsics = sample_intrinsics();
         let observation = TriangulationObservation::new(
@@ -215,6 +305,21 @@ mod tests {
 
         assert!(has_positive_depth(&extrinsics, &world));
         assert!(point_depth(&extrinsics, &world) > 0.0);
+    }
+
+    #[test]
+    fn projects_world_point_back_to_image() {
+        let intrinsics = sample_intrinsics();
+        let extrinsics = CameraExtrinsics {
+            rotation: Matrix3::identity(),
+            translation: Vector3::new(0.1, -0.1, 1.0),
+        };
+        let world = WorldPoint::new(0.3, 0.2, 4.0);
+
+        let projected = project_world_to_image(&intrinsics, &extrinsics, &world).unwrap();
+
+        assert!(projected.x.is_finite());
+        assert!(projected.y.is_finite());
     }
 
     fn sample_intrinsics() -> CameraIntrinsics {

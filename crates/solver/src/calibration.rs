@@ -62,7 +62,9 @@ pub fn optimize(
     initial: &SolverCalibration,
 ) -> Result<SolverCalibration> {
     if observations.is_empty() {
-        return Err(anyhow!("at least one observation set is required for optimization"));
+        return Err(anyhow!(
+            "at least one observation set is required for optimization"
+        ));
     }
 
     if observations.len() != initial.extrinsics.len() {
@@ -245,7 +247,10 @@ mod tests {
             .collect()
     }
 
-    fn extrinsics_from_pose(rotation_vec: Vector3<f64>, translation: Vector3<f64>) -> CameraExtrinsics {
+    fn extrinsics_from_pose(
+        rotation_vec: Vector3<f64>,
+        translation: Vector3<f64>,
+    ) -> CameraExtrinsics {
         CameraExtrinsics {
             rotation: Rotation3::from_scaled_axis(rotation_vec).into_inner(),
             translation,
@@ -293,8 +298,10 @@ mod tests {
 
         (0..image_count)
             .map(|index| {
-                let extrinsics =
-                    extrinsics_from_pose(rotations[index % rotations.len()], translations[index % translations.len()]);
+                let extrinsics = extrinsics_from_pose(
+                    rotations[index % rotations.len()],
+                    translations[index % translations.len()],
+                );
                 (
                     synthetic_observations(intrinsics, distortion, &extrinsics, &world_points),
                     extrinsics,
