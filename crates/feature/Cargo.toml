@@ -1,11 +1,9 @@
 [package]
-name = "structura-calibration"
+name = "structura-feature"
 version.workspace = true
 edition.workspace = true
 
 [dependencies]
 anyhow.workspace = true
-chess-corners.workspace = true
-kornia.workspace = true
-kornia-apriltag.workspace = true
 structura-geometry = { path = "../geometry" }
+kornia-apriltag.workspace = true

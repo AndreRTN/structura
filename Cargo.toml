@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "crates/geometry",
+    "crates/feature",
     "crates/calibration",
     "crates/sfm",
     "crates/cli",

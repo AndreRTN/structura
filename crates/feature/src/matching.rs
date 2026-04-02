@@ -1,6 +1,5 @@
 use anyhow::{Result, anyhow};
-
-use crate::detector::ImagePoint;
+use structura_geometry::point::ImagePoint;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LoweRatioConfig {

@@ -1,9 +1,14 @@
 use anyhow::{Result, anyhow};
 use kornia::k3d::pose::homography_4pt2d;
 
-use crate::{detector::ImagePoint, matching::PointMatch};
+use crate::point::ImagePoint;
 
 pub type HomographyMatrix = [[f64; 3]; 3];
+
+pub trait PointMatchLike {
+    fn source_point(&self) -> ImagePoint;
+    fn target_point(&self) -> ImagePoint;
+}
 
 pub fn estimate_homography_4pt(
     source_points: &[ImagePoint; 4],
@@ -19,18 +24,21 @@ pub fn estimate_homography_4pt(
     Ok(homo)
 }
 
-pub fn estimate_homography_from_matches(matches: &[PointMatch]) -> Result<HomographyMatrix> {
+pub fn estimate_homography_from_matches<T>(matches: &[T]) -> Result<HomographyMatrix>
+where
+    T: PointMatchLike + Copy,
+{
     if matches.len() < 4 {
         return Err(anyhow!(
             "at least four matches are required to estimate a 2d homography"
         ));
     }
 
-    let selected: [PointMatch; 4] = matches[..4]
+    let selected: [T; 4] = matches[..4]
         .try_into()
         .map_err(|_| anyhow!("failed to select four matches for homography estimation"))?;
-    let source = selected.map(|entry| entry.source_point);
-    let target = selected.map(|entry| entry.target_point);
+    let source = selected.map(|entry| entry.source_point());
+    let target = selected.map(|entry| entry.target_point());
 
     estimate_homography_4pt(&source, &target)
 }
@@ -42,8 +50,23 @@ fn to_point2d(point: ImagePoint) -> [f64; 2] {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::matching::PointMatch;
     use approx::assert_relative_eq;
+
+    #[derive(Debug, Clone, Copy)]
+    struct TestMatch {
+        source: ImagePoint,
+        target: ImagePoint,
+    }
+
+    impl PointMatchLike for TestMatch {
+        fn source_point(&self) -> ImagePoint {
+            self.source
+        }
+
+        fn target_point(&self) -> ImagePoint {
+            self.target
+        }
+    }
 
     #[test]
     fn estimates_translation_homography() {
@@ -72,10 +95,10 @@ mod tests {
     #[test]
     fn estimates_identity_homography_from_matches() {
         let matches = [
-            point_match((0.0, 0.0), (0.0, 0.0)),
-            point_match((1.0, 0.0), (1.0, 0.0)),
-            point_match((0.0, 1.0), (0.0, 1.0)),
-            point_match((1.0, 1.0), (1.0, 1.0)),
+            test_match((0.0, 0.0), (0.0, 0.0)),
+            test_match((1.0, 0.0), (1.0, 0.0)),
+            test_match((0.0, 1.0), (0.0, 1.0)),
+            test_match((1.0, 1.0), (1.0, 1.0)),
         ];
 
         let homo = estimate_homography_from_matches(&matches).unwrap();
@@ -137,9 +160,9 @@ mod tests {
     #[test]
     fn fails_with_fewer_than_four_matches() {
         let matches = [
-            point_match((0.0, 0.0), (1.0, 1.0)),
-            point_match((1.0, 0.0), (2.0, 1.0)),
-            point_match((0.0, 1.0), (1.0, 2.0)),
+            test_match((0.0, 0.0), (1.0, 1.0)),
+            test_match((1.0, 0.0), (2.0, 1.0)),
+            test_match((0.0, 1.0), (1.0, 2.0)),
         ];
 
         let error = estimate_homography_from_matches(&matches).unwrap_err();
@@ -151,14 +174,10 @@ mod tests {
         );
     }
 
-    fn point_match(source: (f32, f32), target: (f32, f32)) -> PointMatch {
-        PointMatch {
-            source_index: 0,
-            target_index: 0,
-            source_point: ImagePoint::new(source.0, source.1),
-            target_point: ImagePoint::new(target.0, target.1),
-            distance: 0.0,
-            ratio: 0.0,
+    fn test_match(source: (f32, f32), target: (f32, f32)) -> TestMatch {
+        TestMatch {
+            source: ImagePoint::new(source.0, source.1),
+            target: ImagePoint::new(target.0, target.1),
         }
     }
 
