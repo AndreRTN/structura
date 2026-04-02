@@ -5,6 +5,7 @@ members = [
     "crates/calibration",
     "crates/solver",
     "crates/sfm",
+    "crates/rerun",
     "crates/cli",
 ]
 resolver = "2"

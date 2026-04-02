@@ -1,0 +1,9 @@
+[package]
+name = "structura-rerun"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+rerun.workspace = true
+structura-geometry = { path = "../geometry" }

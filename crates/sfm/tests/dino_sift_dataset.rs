@@ -19,6 +19,7 @@ use structura_geometry::{
     },
     two_view::{FundamentalRansacConfig, estimate_fundamental, estimate_fundamental_ransac},
 };
+use structura_rerun::cloud::{SparseCloudFrame, SparseCloudLogger};
 use structura_sfm::{
     FeatureTrack, InitialPairCandidate, InitialPairScore, LandmarkObservation, LandmarkTrack,
     RegisteredView, TrackTriangulationConfig,
@@ -94,6 +95,8 @@ fn reconstructs_dino_dataset_with_sift_and_gt_intrinsics() {
     )
     .unwrap();
     let ba_config = dino_bundle_adjustment_config();
+    let rerun_logger = SparseCloudLogger::from_env("structura_sfm_dino_sparse");
+    let mut log_step = 0_i64;
     eprintln!(
         "GT intrinsics: fx={:.3} fy={:.3} cx={:.3} cy={:.3}",
         intrinsics.alpha, intrinsics.beta, intrinsics.u0, intrinsics.v0
@@ -138,6 +141,16 @@ fn reconstructs_dino_dataset_with_sift_and_gt_intrinsics() {
         triangulation_config,
     );
     eprintln!("initial landmarks: {}", landmarks.len());
+    log_landmarks_to_rerun(
+        &rerun_logger,
+        SparseCloudFrame {
+            step: log_step,
+            registered_views: registered_views.len(),
+            stage: "initial_triangulation",
+            mean_reprojection_error: None,
+        },
+        &landmarks,
+    );
 
     let registration_order = build_registration_order(image_paths.len(), &initial_pair);
     for view_index in registration_order {
@@ -168,6 +181,17 @@ fn reconstructs_dino_dataset_with_sift_and_gt_intrinsics() {
             &global_tracks,
             triangulation_config,
         );
+        log_step += 1;
+        log_landmarks_to_rerun(
+            &rerun_logger,
+            SparseCloudFrame {
+                step: log_step,
+                registered_views: registered_views.len(),
+                stage: "triangulated",
+                mean_reprojection_error: None,
+            },
+            &landmarks,
+        );
 
         if registered_views.len() % 5 == 0 || view_index + 1 == image_paths.len() {
             let track_ids = landmarks
@@ -197,6 +221,17 @@ fn reconstructs_dino_dataset_with_sift_and_gt_intrinsics() {
                         landmarks.len(),
                         optimized.mean_reprojection_error
                     );
+                    log_step += 1;
+                    log_landmarks_to_rerun(
+                        &rerun_logger,
+                        SparseCloudFrame {
+                            step: log_step,
+                            registered_views: registered_views.len(),
+                            stage: "bundle_adjustment",
+                            mean_reprojection_error: Some(optimized.mean_reprojection_error),
+                        },
+                        &landmarks,
+                    );
                 }
                 Err(error) => {
                     eprintln!("bundle adjustment skipped after registration failure: {error}");
@@ -209,6 +244,17 @@ fn reconstructs_dino_dataset_with_sift_and_gt_intrinsics() {
         "final reconstruction: {} views, {} landmarks",
         registered_views.len(),
         landmarks.len()
+    );
+    log_step += 1;
+    log_landmarks_to_rerun(
+        &rerun_logger,
+        SparseCloudFrame {
+            step: log_step,
+            registered_views: registered_views.len(),
+            stage: "final",
+            mean_reprojection_error: None,
+        },
+        &landmarks,
     );
 
     assert!(
@@ -229,6 +275,24 @@ fn dino_bundle_adjustment_config() -> BundleAdjustmentConfig {
     config.levenberg_params.lambda_factor = 3.0;
     config.levenberg_params.min_model_fidelity = 1e-7;
     config
+}
+
+fn log_landmarks_to_rerun(
+    logger: &SparseCloudLogger,
+    frame: SparseCloudFrame<'_>,
+    landmarks: &[(usize, LandmarkTrack)],
+) {
+    if !logger.is_enabled() {
+        return;
+    }
+
+    let points = landmarks
+        .iter()
+        .map(|(_, landmark)| landmark.position)
+        .collect::<Vec<_>>();
+    if let Err(error) = logger.log_sparse_cloud(frame, &points) {
+        eprintln!("rerun sparse cloud logging failed: {error}");
+    }
 }
 
 fn discover_viff_images(images_dir: &Path) -> anyhow::Result<Vec<PathBuf>> {

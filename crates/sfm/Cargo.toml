@@ -13,3 +13,4 @@ structura-solver = { path = "../solver" }
 
 [dev-dependencies]
 serde_json = "1"
+structura-rerun = { path = "../rerun" }
