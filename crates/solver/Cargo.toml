@@ -1,0 +1,16 @@
+[package]
+name = "structura-solver"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+factrs.workspace = true
+nalgebra.workspace = true
+structura-calibration = { path = "../calibration" }
+structura-geometry = { path = "../geometry" }
+
+[dev-dependencies]
+approx = "0.5"
+image.workspace = true
+kornia.workspace = true

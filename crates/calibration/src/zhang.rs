@@ -13,14 +13,17 @@ pub struct ZhangCalibration {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct ZhangRadialDistortion {
+pub struct ZhangDistortion {
     pub k1: f64,
     pub k2: f64,
+    pub k3: f64,
+    pub p1: f64,
+    pub p2: f64,
 }
 
 pub fn distort_point(
     intrinsics: &CameraIntrinsics,
-    distortion: ZhangRadialDistortion,
+    distortion: ZhangDistortion,
     point: Point2<f64>,
 ) -> Point2<f64> {
     project_normalized_to_pixel(
@@ -31,15 +34,15 @@ pub fn distort_point(
 
 pub fn undistort_point_iterative(
     intrinsics: &CameraIntrinsics,
-    distortion: ZhangRadialDistortion,
+    distortion: ZhangDistortion,
     point: Point2<f64>,
 ) -> Point2<f64> {
     let distorted_normalized = project_pixel_to_normalized(intrinsics, point);
     let undistorted = (0..8).fold(distorted_normalized, |estimate, _| {
-        let scale = radial_distortion_factor(estimate, distortion);
+        let distorted_estimate = distort_normalized_point(estimate, distortion);
         Point2::new(
-            distorted_normalized.x / scale,
-            distorted_normalized.y / scale,
+            distorted_normalized.x + estimate.x - distorted_estimate.x,
+            distorted_normalized.y + estimate.y - distorted_estimate.y,
         )
     });
 
@@ -48,7 +51,7 @@ pub fn undistort_point_iterative(
 
 pub fn undistort_points(
     intrinsics: &CameraIntrinsics,
-    distortion: ZhangRadialDistortion,
+    distortion: ZhangDistortion,
     points: &[Point2<f64>],
 ) -> Vec<Point2<f64>> {
     points
@@ -115,20 +118,17 @@ pub fn estimate_radial_distortion(
     intrinsics: &CameraIntrinsics,
     extrinsics: &[CameraExtrinsics],
     observations: &[Vec<PointCorrespondence2D3D>],
-) -> Result<ZhangRadialDistortion> {
+) -> Result<ZhangDistortion> {
     if extrinsics.len() != observations.len() {
         return Err(anyhow!(
             "the number of extrinsic views must match the number of observation sets"
         ));
     }
 
-    let num_equations = observations
-        .iter()
-        .map(|view| view.len() * 2)
-        .sum::<usize>();
-    if num_equations < 2 {
+    let num_equations = observations.iter().map(|view| view.len() * 2).sum::<usize>();
+    if num_equations < 5 {
         return Err(anyhow!(
-            "at least one 2d/3d correspondence is required to estimate radial distortion"
+            "at least three 2d/3d correspondences are required to estimate Brown-Conrady distortion"
         ));
     }
 
@@ -147,14 +147,16 @@ pub fn estimate_radial_distortion(
         .flatten()
         .collect::<Vec<_>>();
 
-    let mut d = DMatrix::<f64>::zeros(num_equations, 2);
+    let mut d = DMatrix::<f64>::zeros(num_equations, 5);
     let mut residuals = DVector::<f64>::zeros(num_equations);
     equations
         .iter()
         .enumerate()
         .for_each(|(row, (coefficients, residual))| {
-            d[(row, 0)] = coefficients[0];
-            d[(row, 1)] = coefficients[1];
+            coefficients
+                .iter()
+                .enumerate()
+                .for_each(|(col, value)| d[(row, col)] = *value);
             residuals[row] = *residual;
         });
 
@@ -164,16 +166,19 @@ pub fn estimate_radial_distortion(
         anyhow!("failed to estimate radial distortion: normal matrix is singular")
     })? * normal_rhs;
 
-    Ok(ZhangRadialDistortion {
+    Ok(ZhangDistortion {
         k1: solution[0],
         k2: solution[1],
+        k3: solution[2],
+        p1: solution[3],
+        p2: solution[4],
     })
 }
 
 pub fn calibrate_from_homographies_with_radial_distortion(
     homographies: &[HomographyMatrix],
     observations: &[Vec<PointCorrespondence2D3D>],
-) -> Result<(ZhangCalibration, ZhangRadialDistortion)> {
+) -> Result<(ZhangCalibration, ZhangDistortion)> {
     let calibration = calibrate_from_homographies(homographies)?;
     let radial_distortion = estimate_radial_distortion(
         &calibration.intrinsics,
@@ -339,41 +344,66 @@ fn radial_distance_squared(normalized: Point2<f64>) -> f64 {
     normalized.x * normalized.x + normalized.y * normalized.y
 }
 
-fn radial_distortion_factor(
-    normalized: Point2<f64>,
-    distortion: ZhangRadialDistortion,
-) -> f64 {
-    let radial = radial_distance_squared(normalized);
-    1.0 + distortion.k1 * radial + distortion.k2 * radial * radial
-}
-
 fn distort_normalized_point(
     normalized: Point2<f64>,
-    distortion: ZhangRadialDistortion,
+    distortion: ZhangDistortion,
 ) -> Point2<f64> {
-    let factor = radial_distortion_factor(normalized, distortion);
-    Point2::new(normalized.x * factor, normalized.y * factor)
+    let radial = radial_distance_squared(normalized);
+    let radial_squared = radial * radial;
+    let radial_cubed = radial_squared * radial;
+    let x = normalized.x;
+    let y = normalized.y;
+    let radial_factor =
+        1.0 + distortion.k1 * radial + distortion.k2 * radial_squared + distortion.k3 * radial_cubed;
+
+    Point2::new(
+        x * radial_factor + 2.0 * distortion.p1 * x * y + distortion.p2 * (radial + 2.0 * x * x),
+        y * radial_factor + distortion.p1 * (radial + 2.0 * y * y) + 2.0 * distortion.p2 * x * y,
+    )
 }
 
 fn radial_distortion_equations(
     intrinsics: &CameraIntrinsics,
     extrinsics: &CameraExtrinsics,
     observation: &PointCorrespondence2D3D,
-) -> Result<[(SVector<f64, 2>, f64); 2]> {
+) -> Result<[(SVector<f64, 5>, f64); 2]> {
     let normalized = project_world_to_normalized(extrinsics, observation.world)?;
     let ideal = project_normalized_to_pixel(intrinsics, normalized);
     let radial = radial_distance_squared(normalized);
     let radial_squared = radial * radial;
+    let radial_cubed = radial_squared * radial;
+    let x = normalized.x;
+    let y = normalized.y;
     let delta_u = ideal.x - intrinsics.u0;
     let delta_v = ideal.y - intrinsics.v0;
+    let tangential_x = [
+        intrinsics.alpha * 2.0 * x * y + intrinsics.gamma * (radial + 2.0 * y * y),
+        intrinsics.alpha * (radial + 2.0 * x * x) + intrinsics.gamma * 2.0 * x * y,
+    ];
+    let tangential_y = [
+        intrinsics.beta * (radial + 2.0 * y * y),
+        intrinsics.beta * 2.0 * x * y,
+    ];
 
     Ok([
         (
-            SVector::<f64, 2>::new(delta_u * radial, delta_u * radial_squared),
+            SVector::<f64, 5>::new(
+                delta_u * radial,
+                delta_u * radial_squared,
+                delta_u * radial_cubed,
+                tangential_x[0],
+                tangential_x[1],
+            ),
             observation.image.x - ideal.x,
         ),
         (
-            SVector::<f64, 2>::new(delta_v * radial, delta_v * radial_squared),
+            SVector::<f64, 5>::new(
+                delta_v * radial,
+                delta_v * radial_squared,
+                delta_v * radial_cubed,
+                tangential_y[0],
+                tangential_y[1],
+            ),
             observation.image.y - ideal.y,
         ),
     ])
@@ -504,9 +534,12 @@ mod tests {
             u0: 320.0,
             v0: 240.0,
         };
-        let distortion = ZhangRadialDistortion {
+        let distortion = ZhangDistortion {
             k1: 0.015,
             k2: -0.004,
+            k3: 0.002,
+            p1: 0.001,
+            p2: -0.0005,
         };
 
         let extrinsics = vec![
@@ -529,6 +562,9 @@ mod tests {
 
         assert_relative_eq!(estimated.k1, distortion.k1, epsilon = 1e-10);
         assert_relative_eq!(estimated.k2, distortion.k2, epsilon = 1e-10);
+        assert_relative_eq!(estimated.k3, distortion.k3, epsilon = 1e-10);
+        assert_relative_eq!(estimated.p1, distortion.p1, epsilon = 1e-10);
+        assert_relative_eq!(estimated.p2, distortion.p2, epsilon = 1e-10);
     }
 
     #[test]
@@ -540,9 +576,12 @@ mod tests {
             u0: 320.0,
             v0: 240.0,
         };
-        let distortion = ZhangRadialDistortion {
+        let distortion = ZhangDistortion {
             k1: 0.01,
             k2: -0.002,
+            k3: 0.001,
+            p1: 0.0008,
+            p2: -0.0006,
         };
         let extrinsics = vec![
             extrinsics_from_pose(Vector3::new(0.05, 0.1, -0.02), Vector3::new(0.0, 0.0, 5.0)),
@@ -577,6 +616,9 @@ mod tests {
         assert_eq!(calibration.extrinsics.len(), 3);
         assert_relative_eq!(estimated_distortion.k1, distortion.k1, epsilon = 1e-10);
         assert_relative_eq!(estimated_distortion.k2, distortion.k2, epsilon = 1e-10);
+        assert_relative_eq!(estimated_distortion.k3, distortion.k3, epsilon = 1e-10);
+        assert_relative_eq!(estimated_distortion.p1, distortion.p1, epsilon = 1e-10);
+        assert_relative_eq!(estimated_distortion.p2, distortion.p2, epsilon = 1e-10);
     }
 
     #[test]
@@ -588,9 +630,12 @@ mod tests {
             u0: 320.0,
             v0: 240.0,
         };
-        let distortion = ZhangRadialDistortion {
+        let distortion = ZhangDistortion {
             k1: 0.01,
             k2: -0.002,
+            k3: 0.001,
+            p1: 0.0008,
+            p2: -0.0006,
         };
         let ideal = Point2::new(412.0, 318.0);
 
@@ -610,9 +655,12 @@ mod tests {
             u0: 320.0,
             v0: 240.0,
         };
-        let distortion = ZhangRadialDistortion {
+        let distortion = ZhangDistortion {
             k1: 0.015,
             k2: -0.004,
+            k3: 0.002,
+            p1: 0.001,
+            p2: -0.0005,
         };
         let ideal_points = vec![
             Point2::new(320.0, 240.0),
@@ -668,7 +716,7 @@ mod tests {
     fn synthetic_observations(
         intrinsics: &CameraIntrinsics,
         extrinsics: &CameraExtrinsics,
-        distortion: ZhangRadialDistortion,
+        distortion: ZhangDistortion,
     ) -> Vec<PointCorrespondence2D3D> {
         let board_points = [
             Point3::new(0.0, 0.0, 0.0),
