@@ -6,3 +6,6 @@ edition.workspace = true
 [dependencies]
 anyhow.workspace = true
 factrs.workspace = true
+nalgebra.workspace = true
+structura-feature = { path = "../feature" }
+structura-geometry = { path = "../geometry" }
