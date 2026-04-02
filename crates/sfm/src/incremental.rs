@@ -1,12 +1,14 @@
 use anyhow::{Result, anyhow, ensure};
-use nalgebra::{DMatrix, Matrix3, Matrix3x4, Vector3};
+use nalgebra::{Matrix3, Vector3};
 use structura_feature::{
     matching::{LoweRatioConfig, PointMatch},
     xfeat::{XfeatFeatureSet, lowe_ratio_match_features},
 };
 use structura_geometry::{
     camera::{CameraExtrinsics, CameraIntrinsics},
+    epnp::EpnpSolver,
     point::{ImagePoint64, PointCorrespondence2D3D, WorldPoint},
+    triangulation::{TriangulationObservation, has_positive_depth, triangulate_observations},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -178,6 +180,19 @@ pub fn register_next_view(
     intrinsics: &CameraIntrinsics,
     view_index: usize,
     correspondences: &[PointCorrespondence2D3D],
+) -> Result<NextViewRegistration> {
+    register_next_view_with_solver(
+        intrinsics,
+        view_index,
+        correspondences,
+        &EpnpSolver::default(),
+    )
+}
+
+pub fn register_next_view_with_solver(
+    intrinsics: &CameraIntrinsics,
+    view_index: usize,
+    correspondences: &[PointCorrespondence2D3D],
     pnp_solver: &dyn PnpSolver,
 ) -> Result<NextViewRegistration> {
     ensure!(
@@ -194,6 +209,16 @@ pub fn register_next_view(
         },
         used_correspondence_count: correspondences.len(),
     })
+}
+
+impl PnpSolver for EpnpSolver {
+    fn solve_pose(
+        &self,
+        intrinsics: &CameraIntrinsics,
+        correspondences: &[PointCorrespondence2D3D],
+    ) -> Result<CameraExtrinsics> {
+        EpnpSolver::solve_pose(self, intrinsics, correspondences)
+    }
 }
 
 fn score_initial_pair(
@@ -362,102 +387,25 @@ fn triangulate_match(
     second_pose: &CameraExtrinsics,
     matched: &PointMatch,
 ) -> Result<WorldPoint> {
-    let first = normalized_image_point(
+    triangulate_observations(
         intrinsics,
-        matched.source_point.x as f64,
-        matched.source_point.y as f64,
-    )?;
-    let second = normalized_image_point(
-        intrinsics,
-        matched.target_point.x as f64,
-        matched.target_point.y as f64,
-    )?;
-    triangulate_normalized_observation(first_pose, second_pose, first, second)
-}
-
-fn normalized_image_point(intrinsics: &CameraIntrinsics, x: f64, y: f64) -> Result<Vector3<f64>> {
-    let k_inv = intrinsics
-        .matrix()
-        .try_inverse()
-        .ok_or_else(|| anyhow!("camera intrinsics matrix is not invertible"))?;
-    Ok(k_inv * Vector3::new(x, y, 1.0))
-}
-
-fn triangulate_normalized_observation(
-    first_pose: &CameraExtrinsics,
-    second_pose: &CameraExtrinsics,
-    first: Vector3<f64>,
-    second: Vector3<f64>,
-) -> Result<WorldPoint> {
-    let first_projection = projection_matrix(first_pose);
-    let second_projection = projection_matrix(second_pose);
-    let a = DMatrix::from_row_slice(
-        4,
-        4,
         &[
-            first.x * first_projection[(2, 0)] - first_projection[(0, 0)],
-            first.x * first_projection[(2, 1)] - first_projection[(0, 1)],
-            first.x * first_projection[(2, 2)] - first_projection[(0, 2)],
-            first.x * first_projection[(2, 3)] - first_projection[(0, 3)],
-            first.y * first_projection[(2, 0)] - first_projection[(1, 0)],
-            first.y * first_projection[(2, 1)] - first_projection[(1, 1)],
-            first.y * first_projection[(2, 2)] - first_projection[(1, 2)],
-            first.y * first_projection[(2, 3)] - first_projection[(1, 3)],
-            second.x * second_projection[(2, 0)] - second_projection[(0, 0)],
-            second.x * second_projection[(2, 1)] - second_projection[(0, 1)],
-            second.x * second_projection[(2, 2)] - second_projection[(0, 2)],
-            second.x * second_projection[(2, 3)] - second_projection[(0, 3)],
-            second.y * second_projection[(2, 0)] - second_projection[(1, 0)],
-            second.y * second_projection[(2, 1)] - second_projection[(1, 1)],
-            second.y * second_projection[(2, 2)] - second_projection[(1, 2)],
-            second.y * second_projection[(2, 3)] - second_projection[(1, 3)],
+            TriangulationObservation::new(
+                ImagePoint64::new(matched.source_point.x as f64, matched.source_point.y as f64),
+                first_pose.clone(),
+            ),
+            TriangulationObservation::new(
+                ImagePoint64::new(matched.target_point.x as f64, matched.target_point.y as f64),
+                second_pose.clone(),
+            ),
         ],
-    );
-
-    let svd = a.svd(true, true);
-    let v_t = svd
-        .v_t
-        .ok_or_else(|| anyhow!("triangulation SVD did not produce V^T"))?;
-    let homogeneous = v_t.row(v_t.nrows() - 1);
-    let w = homogeneous[3];
-    ensure!(
-        w.abs() > f64::EPSILON,
-        "triangulation produced a point at infinity"
-    );
-
-    Ok(WorldPoint::new(
-        homogeneous[0] / w,
-        homogeneous[1] / w,
-        homogeneous[2] / w,
-    ))
-}
-
-fn projection_matrix(extrinsics: &CameraExtrinsics) -> Matrix3x4<f64> {
-    Matrix3x4::new(
-        extrinsics.rotation[(0, 0)],
-        extrinsics.rotation[(0, 1)],
-        extrinsics.rotation[(0, 2)],
-        extrinsics.translation[0],
-        extrinsics.rotation[(1, 0)],
-        extrinsics.rotation[(1, 1)],
-        extrinsics.rotation[(1, 2)],
-        extrinsics.translation[1],
-        extrinsics.rotation[(2, 0)],
-        extrinsics.rotation[(2, 1)],
-        extrinsics.rotation[(2, 2)],
-        extrinsics.translation[2],
     )
-}
-
-fn has_positive_depth(extrinsics: &CameraExtrinsics, world: &WorldPoint) -> bool {
-    let camera = extrinsics.rotation * world.coords + extrinsics.translation;
-    camera.z > 0.0
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nalgebra::{Rotation3, Vector2};
+    use nalgebra::{Point2, Rotation3, Vector2};
     use structura_feature::xfeat::XfeatFeature;
 
     struct StubPnpSolver {
@@ -556,7 +504,7 @@ mod tests {
     }
 
     #[test]
-    fn registers_next_view_through_pnp_solver() {
+    fn registers_next_view_through_custom_pnp_solver() {
         let intrinsics = sample_intrinsics();
         let expected = CameraExtrinsics {
             rotation: Rotation3::from_euler_angles(-0.01, 0.04, 0.02).into_inner(),
@@ -570,7 +518,7 @@ mod tests {
             })
             .collect::<Vec<_>>();
 
-        let registration = register_next_view(
+        let registration = register_next_view_with_solver(
             &intrinsics,
             2,
             &correspondences,
@@ -586,6 +534,34 @@ mod tests {
             correspondences.len()
         );
         assert_eq!(registration.view.extrinsics, expected);
+    }
+
+    #[test]
+    fn registers_next_view_with_default_epnp_solver() {
+        let intrinsics = sample_intrinsics();
+        let expected = CameraExtrinsics {
+            rotation: Rotation3::from_euler_angles(0.03, -0.02, 0.01).into_inner(),
+            translation: Vector3::new(0.1, -0.05, 1.2),
+        };
+        let correspondences = sample_world_points()
+            .into_iter()
+            .map(|world| {
+                PointCorrespondence2D3D::new(project64(&intrinsics, &expected, world), world)
+            })
+            .collect::<Vec<_>>();
+
+        let registration = register_next_view(&intrinsics, 2, &correspondences).unwrap();
+
+        assert_eq!(registration.view.view_index, 2);
+        assert_eq!(
+            registration.used_correspondence_count,
+            correspondences.len()
+        );
+        assert!((registration.view.extrinsics.translation - expected.translation).norm() < 1e-3);
+        let rotation_delta = Rotation3::from_matrix(
+            &(registration.view.extrinsics.rotation * expected.rotation.transpose()),
+        );
+        assert!(rotation_delta.angle() < 1e-3);
     }
 
     fn feature_set(points: &[(f32, f32)]) -> XfeatFeatureSet {
@@ -633,6 +609,18 @@ mod tests {
             (intrinsics.alpha * normalized.x + intrinsics.gamma * normalized.y + intrinsics.u0)
                 as f32,
             (intrinsics.beta * normalized.y + intrinsics.v0) as f32,
+        )
+    }
+
+    fn project64(
+        intrinsics: &CameraIntrinsics,
+        extrinsics: &CameraExtrinsics,
+        world: WorldPoint,
+    ) -> Point2<f64> {
+        let camera = extrinsics.rotation * world.coords + extrinsics.translation;
+        Point2::new(
+            intrinsics.alpha * (camera.x / camera.z) + intrinsics.u0,
+            intrinsics.beta * (camera.y / camera.z) + intrinsics.v0,
         )
     }
 
