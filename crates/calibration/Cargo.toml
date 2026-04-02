@@ -5,6 +5,7 @@ edition.workspace = true
 
 [dependencies]
 anyhow.workspace = true
+approx = "0.5"
 chess-corners.workspace = true
 kornia.workspace = true
 kornia-apriltag.workspace = true
