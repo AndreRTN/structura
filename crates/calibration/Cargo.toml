@@ -8,4 +8,8 @@ anyhow.workspace = true
 chess-corners.workspace = true
 kornia.workspace = true
 kornia-apriltag.workspace = true
+nalgebra.workspace = true
 structura-geometry = { path = "../geometry" }
+
+[dev-dependencies]
+approx = "0.5"

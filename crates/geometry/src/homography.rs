@@ -1,9 +1,10 @@
 use anyhow::{Result, anyhow};
 use kornia::k3d::pose::homography_4pt2d;
+use nalgebra::Matrix3;
 
 use crate::point::ImagePoint;
 
-pub type HomographyMatrix = [[f64; 3]; 3];
+pub type HomographyMatrix = Matrix3<f64>;
 
 pub trait PointMatchLike {
     fn source_point(&self) -> ImagePoint;
@@ -21,7 +22,10 @@ pub fn estimate_homography_4pt(
     homography_4pt2d(&source, &target, &mut homo)
         .map_err(|error| anyhow!("failed to estimate 2d homography: {error}"))?;
 
-    Ok(homo)
+    Ok(Matrix3::new(
+        homo[0][0], homo[0][1], homo[0][2], homo[1][0], homo[1][1], homo[1][2], homo[2][0],
+        homo[2][1], homo[2][2],
+    ))
 }
 
 pub fn estimate_homography_from_matches<T>(matches: &[T]) -> Result<HomographyMatrix>
@@ -85,11 +89,11 @@ mod tests {
 
         let homo = estimate_homography_4pt(&source, &target).unwrap();
 
-        assert_relative_eq!(homo[0][0], 1.0, epsilon = 1e-6);
-        assert_relative_eq!(homo[1][1], 1.0, epsilon = 1e-6);
-        assert_relative_eq!(homo[0][2], 2.0, epsilon = 1e-6);
-        assert_relative_eq!(homo[1][2], 3.0, epsilon = 1e-6);
-        assert_relative_eq!(homo[2][2], 1.0, epsilon = 1e-6);
+        assert_relative_eq!(homo[(0, 0)], 1.0, epsilon = 1e-6);
+        assert_relative_eq!(homo[(1, 1)], 1.0, epsilon = 1e-6);
+        assert_relative_eq!(homo[(0, 2)], 2.0, epsilon = 1e-6);
+        assert_relative_eq!(homo[(1, 2)], 3.0, epsilon = 1e-6);
+        assert_relative_eq!(homo[(2, 2)], 1.0, epsilon = 1e-6);
     }
 
     #[test]
@@ -103,15 +107,15 @@ mod tests {
 
         let homo = estimate_homography_from_matches(&matches).unwrap();
 
-        assert_relative_eq!(homo[0][0], 1.0, epsilon = 1e-6);
-        assert_relative_eq!(homo[0][1], 0.0, epsilon = 1e-6);
-        assert_relative_eq!(homo[0][2], 0.0, epsilon = 1e-6);
-        assert_relative_eq!(homo[1][0], 0.0, epsilon = 1e-6);
-        assert_relative_eq!(homo[1][1], 1.0, epsilon = 1e-6);
-        assert_relative_eq!(homo[1][2], 0.0, epsilon = 1e-6);
-        assert_relative_eq!(homo[2][0], 0.0, epsilon = 1e-6);
-        assert_relative_eq!(homo[2][1], 0.0, epsilon = 1e-6);
-        assert_relative_eq!(homo[2][2], 1.0, epsilon = 1e-6);
+        assert_relative_eq!(homo[(0, 0)], 1.0, epsilon = 1e-6);
+        assert_relative_eq!(homo[(0, 1)], 0.0, epsilon = 1e-6);
+        assert_relative_eq!(homo[(0, 2)], 0.0, epsilon = 1e-6);
+        assert_relative_eq!(homo[(1, 0)], 0.0, epsilon = 1e-6);
+        assert_relative_eq!(homo[(1, 1)], 1.0, epsilon = 1e-6);
+        assert_relative_eq!(homo[(1, 2)], 0.0, epsilon = 1e-6);
+        assert_relative_eq!(homo[(2, 0)], 0.0, epsilon = 1e-6);
+        assert_relative_eq!(homo[(2, 1)], 0.0, epsilon = 1e-6);
+        assert_relative_eq!(homo[(2, 2)], 1.0, epsilon = 1e-6);
     }
 
     #[test]
@@ -131,15 +135,15 @@ mod tests {
 
         let homo = estimate_homography_4pt(&source, &target).unwrap();
 
-        assert_relative_eq!(homo[0][0], 2.0, epsilon = 1e-6);
-        assert_relative_eq!(homo[1][1], 3.0, epsilon = 1e-6);
-        assert_relative_eq!(homo[0][2], 0.0, epsilon = 1e-6);
-        assert_relative_eq!(homo[1][2], 0.0, epsilon = 1e-6);
+        assert_relative_eq!(homo[(0, 0)], 2.0, epsilon = 1e-6);
+        assert_relative_eq!(homo[(1, 1)], 3.0, epsilon = 1e-6);
+        assert_relative_eq!(homo[(0, 2)], 0.0, epsilon = 1e-6);
+        assert_relative_eq!(homo[(1, 2)], 0.0, epsilon = 1e-6);
     }
 
     #[test]
     fn estimates_projective_homography() {
-        let expected = [[1.0, 0.1, 2.0], [0.2, 1.0, 3.0], [0.01, 0.02, 1.0]];
+        let expected = Matrix3::new(1.0, 0.1, 2.0, 0.2, 1.0, 3.0, 0.01, 0.02, 1.0);
         let source = [
             ImagePoint::new(0.0, 0.0),
             ImagePoint::new(1.0, 0.0),
@@ -152,7 +156,7 @@ mod tests {
 
         for row in 0..3 {
             for col in 0..3 {
-                assert_relative_eq!(homo[row][col], expected[row][col], epsilon = 1e-6);
+                assert_relative_eq!(homo[(row, col)], expected[(row, col)], epsilon = 1e-6);
             }
         }
     }
@@ -184,9 +188,9 @@ mod tests {
     fn apply_homography(h: &HomographyMatrix, point: ImagePoint) -> ImagePoint {
         let x = point.x as f64;
         let y = point.y as f64;
-        let w = h[2][0] * x + h[2][1] * y + h[2][2];
-        let x_prime = (h[0][0] * x + h[0][1] * y + h[0][2]) / w;
-        let y_prime = (h[1][0] * x + h[1][1] * y + h[1][2]) / w;
+        let w = h[(2, 0)] * x + h[(2, 1)] * y + h[(2, 2)];
+        let x_prime = (h[(0, 0)] * x + h[(0, 1)] * y + h[(0, 2)]) / w;
+        let y_prime = (h[(1, 0)] * x + h[(1, 1)] * y + h[(1, 2)]) / w;
 
         ImagePoint::new(x_prime as f32, y_prime as f32)
     }
