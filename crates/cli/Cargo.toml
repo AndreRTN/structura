@@ -5,7 +5,4 @@ edition.workspace = true
 
 [dependencies]
 anyhow.workspace = true
-structura-calibration = { path = "../calibration" }
-structura-core = { path = "../core" }
-structura-sfm = { path = "../sfm" }
-structura-vision = { path = "../vision" }
+

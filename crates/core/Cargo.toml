@@ -1,6 +1,0 @@
-[package]
-name = "structura-core"
-version.workspace = true
-edition.workspace = true
-
-[dependencies]
