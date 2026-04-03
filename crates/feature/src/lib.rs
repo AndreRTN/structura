@@ -1,3 +1,4 @@
+pub mod aliked_onnx;
 pub mod descriptor;
 pub mod lightglue_onnx;
 pub mod matching;

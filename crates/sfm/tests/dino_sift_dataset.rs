@@ -777,6 +777,7 @@ fn extract_superpoint_lightglue_data(
         LightGlueOnnxConfig {
             resize_width: 1024,
             resize_height: 1024,
+            crop_right_border: 30,
         },
     )?;
     let images = image_paths
