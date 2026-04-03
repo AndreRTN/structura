@@ -26,7 +26,12 @@ impl SparseCloudLogger {
             Some(path) => Self::open_save(application_id, Path::new(&path)),
             None => match env::var_os("STRUCTURA_RERUN") {
                 Some(_) => Self::open_spawn(application_id),
-                None => None,
+                None => {
+                    eprintln!(
+                        "rerun logging disabled: set STRUCTURA_RERUN=1 to spawn the viewer or STRUCTURA_RERUN_SAVE=/tmp/{application_id}.rrd to save the recording"
+                    );
+                    None
+                }
             },
         };
 

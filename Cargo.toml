@@ -20,7 +20,7 @@ factrs = "0.3.0"
 image = { version = "0.25", default-features = true }
 nalgebra = "0.34.2"
 ndarray = "0.17.2"
-ort = { version = "=2.0.0-rc.11", default-features = false, features = ["load-dynamic"] }
+ort = { version = "=2.0.0-rc.11", default-features = false, features = ["load-dynamic", "migraphx"] }
 rayon = "1.11"
 kornia = "0.1.10-rc.3"
 kornia-apriltag = "0.1.10"
