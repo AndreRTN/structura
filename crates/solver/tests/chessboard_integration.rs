@@ -15,8 +15,8 @@ use structura_calibration::{
 };
 use structura_geometry::{
     camera::{CameraExtrinsics, CameraIntrinsics},
-    homography::{HomographyMatrix, estimate_homography_4pt},
-    point::{ImagePoint, PointCorrespondence2D3D},
+    homography::{HomographyMatrix, estimate_homography_from_matches},
+    point::PointCorrespondence2D3D,
 };
 use structura_solver::{compute_reprojection_error, from_zhang_initialization, optimize};
 
@@ -257,17 +257,7 @@ fn match_corners_to_world(
 }
 
 fn build_homography(matches: &[PointCorrespondence2D3D]) -> Result<HomographyMatrix> {
-    let corners = [
-        0,
-        BOARD_WIDTH - 1,
-        BOARD_POINT_COUNT - BOARD_WIDTH,
-        BOARD_POINT_COUNT - 1,
-    ]
-    .map(|index| &matches[index]);
-    let source = corners.map(|entry| ImagePoint::new(entry.world.x as f32, entry.world.y as f32));
-    let target = corners.map(|entry| ImagePoint::new(entry.image.x as f32, entry.image.y as f32));
-
-    estimate_homography_4pt(&source, &target)
+    estimate_homography_from_matches(matches)
 }
 
 fn board_points(board_width: usize, board_height: usize, square_size: f64) -> Vec<Point3<f64>> {
