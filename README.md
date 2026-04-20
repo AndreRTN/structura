@@ -43,12 +43,3 @@ Rodar apenas os testes de SfM:
 ```bash
 cargo test -p structura-sfm
 ```
-
-## Modelos e artefatos
-
-- os modelos ONNX ficam em `models/`
-- alguns testes de `lightglue_onnx` geram artefatos visuais em `target/lightglue-onnx-tests/`
-
-## Estado atual
-
-O workspace esta estruturado principalmente como base de bibliotecas e testes. Se voce quiser adicionar uma interface executavel, o lugar natural para isso e `crates/cli`.
